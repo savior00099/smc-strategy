@@ -1,0 +1,124 @@
+//@version=5
+strategy("SMC Strategy - MS + OB + FVG + Liquidity", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+// ---------------- Inputs ----------------
+tz          = input.string("America/New_York", "Session Timezone")
+asiaSess    = input.session("2000-0000", "Asian Session")
+londonSess  = input.session("0300-1100", "London Session")
+nySess      = input.session("0800-1700", "New York Session")
+swingLen    = input.int(10, "Swing Lookback (structure)", minval=2)
+extLen      = input.int(6,  "OB/FVG min extension (candles)", minval=1)
+showFVG     = input.bool(true, "Show FVG / iFVG")
+showOB      = input.bool(true, "Show Order Blocks")
+useHTF      = input.bool(true, "Use 15m & 1h confirmation")
+
+// ---------------- Session Helper ----------------
+inSession(s) => not na(time(timeframe.period, s, tz))
+
+f_session(sess, hRef, lRef) =>
+    inS     = inSession(sess)
+    started = inS and not inS[1]
+    closed  = not inS and inS[1]
+    h = hRef, l = lRef
+    if started
+        h := high, l := low
+    else if inS
+        h := math.max(hRef, high), l := math.min(lRef, low)
+    [inS, started, closed, h, l]
+
+// Vertical line spanning full visible chart + top label at open/close
+f_sessionMarker(opened, closed, name, col) =>
+    if opened
+        line.new(bar_index, low, bar_index, high, extend=extend.both, color=color.new(col,40), style=line.style_dashed)
+        label.new(bar_index, high, name + " OPEN", yloc=yloc.abovebar, style=label.style_label_down, color=col, textcolor=color.white, size=size.small)
+    if closed
+        line.new(bar_index, low, bar_index, high, extend=extend.both, color=color.new(col,60), style=line.style_dotted)
+        label.new(bar_index, high, name + " CLOSE", yloc=yloc.abovebar, style=label.style_label_down, color=color.new(col,30), textcolor=color.white, size=size.small)
+
+// ---- Asia ----
+var float aH=na, var float aL=na
+[aIn,aOpen,aClose,aH2,aL2] = f_session(asiaSess, aH, aL)
+aH := aH2, aL := aL2
+plot(aIn ? aH : na, "Asia High", color.new(color.blue,0), 1, plot.style_linebr)
+plot(aIn ? aL : na, "Asia Low",  color.new(color.blue,0), 1, plot.style_linebr)
+f_sessionMarker(aOpen, aClose, "ASIA", color.blue)
+
+// ---- London ----
+var float lH=na, var float lL=na
+[lIn,lOpen,lClose,lH2,lL2] = f_session(londonSess, lH, lL)
+lH := lH2, lL := lL2
+plot(lIn ? lH : na, "London High", color.new(color.orange,0), 1, plot.style_linebr)
+plot(lIn ? lL : na, "London Low",  color.new(color.orange,0), 1, plot.style_linebr)
+f_sessionMarker(lOpen, lClose, "LONDON", color.orange)
+
+// ---- New York ----
+var float nH=na, var float nL=na
+[nIn,nOpen,nClose,nH2,nL2] = f_session(nySess, nH, nL)
+nH := nH2, nL := nL2
+plot(nIn ? nH : na, "NY High", color.new(color.teal,0), 1, plot.style_linebr)
+plot(nIn ? nL : na, "NY Low",  color.new(color.teal,0), 1, plot.style_linebr)
+f_sessionMarker(nOpen, nClose, "NEW YORK", color.teal)
+
+// ---------------- Market Structure (BOS / CHoCH) ----------------
+ph = ta.pivothigh(swingLen, swingLen)
+pl = ta.pivotlow(swingLen, swingLen)
+var float lastPH = na, var float lastPL = na
+var int trend = 0   // 1 bullish, -1 bearish
+
+if not na(ph)
+    lastPH := high[swingLen]
+if not na(pl)
+    lastPL := low[swingLen]
+
+bull = not na(lastPH) and close > lastPH
+bear = not na(lastPL) and close < lastPL
+
+if bull
+    isCHoCH = trend == -1
+    trend := 1
+    label.new(bar_index, high, isCHoCH ? "CHoCH" : "BOS", style=label.style_label_down, color=color.green, textcolor=color.white, size=size.tiny)
+    lastPH := na
+if bear
+    isCHoCH = trend == 1
+    trend := -1
+    label.new(bar_index, low, isCHoCH ? "CHoCH" : "BOS", style=label.style_label_up, color=color.red, textcolor=color.white, size=size.tiny)
+    lastPL := na
+
+// ---------------- Liquidity Sweeps ----------------
+sweepHigh = not na(lastPH) and high > lastPH and close < lastPH
+sweepLow  = not na(lastPL) and low  < lastPL and close > lastPL
+if sweepHigh
+    label.new(bar_index, high, "LIQ", style=label.style_xcross, color=color.fuchsia, textcolor=color.white, size=size.tiny)
+if sweepLow
+    label.new(bar_index, low, "LIQ", style=label.style_xcross, color=color.fuchsia, textcolor=color.white, size=size.tiny)
+
+// ---------------- Fair Value Gaps (extend >= extLen candles) ----------------
+bullFVG = low > high[2]
+bearFVG = high < low[2]
+if showFVG and bullFVG
+    box.new(bar_index[2], low, bar_index[2] + extLen, high[2], border_color=color.green, bgcolor=color.new(color.green,80))
+if showFVG and bearFVG
+    box.new(bar_index[2], high, bar_index[2] + extLen, low[2], border_color=color.red, bgcolor=color.new(color.red,80))
+
+// ---------------- Order Blocks (yellow, extend >= extLen candles) ----------------
+if showOB and (bull or bear)
+    box.new(bar_index-1, low[1], bar_index-1 + extLen, high[1], border_color=color.yellow, bgcolor=color.new(color.yellow,80))
+
+// ---------------- HTF Confirmation ----------------
+htf15 = request.security(syminfo.tickerid, "15", close > ta.sma(close,20))
+htf1h = request.security(syminfo.tickerid, "60", close > ta.sma(close,20))
+longBias  = not useHTF or (htf15 and htf1h)
+shortBias = not useHTF or (not htf15 and not htf1h)
+
+longSig  = (bull or sweepLow)  and longBias
+shortSig = (bear or sweepHigh) and shortBias
+
+// ---------------- Backtest Entries / Exits ----------------
+if longSig
+    strategy.entry("Long", strategy.long)
+if shortSig
+    strategy.entry("Short", strategy.short)
+
+atr = ta.atr(14)
+strategy.exit("X-L", "Long",  stop=close-atr*1.5, limit=close+atr*3)
+strategy.exit("X-S", "Short", stop=close+atr*1.5, limit=close-atr*3)
